@@ -8,6 +8,7 @@ import com.alibaba.otter.canal.protocol.CanalEntry.EntryType;
 import com.alibaba.otter.canal.protocol.CanalEntry.EventType;
 import com.alibaba.otter.canal.protocol.CanalEntry.RowChange;
 import com.alibaba.otter.canal.protocol.Message;
+import com.google.protobuf.InvalidProtocolBufferException;
 import com.herohuang.doctor.dto.Canal;
 import com.herohuang.doctor.service.CanalService;
 import com.herohuang.doctor.util.PropertyUtil;
@@ -16,6 +17,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
+import redis.clients.jedis.Response;
 
 import java.net.InetSocketAddress;
 import java.util.List;
@@ -30,8 +32,8 @@ public class CanalServiceImpl implements CanalService {
     private PropertyUtil propertyUtil;
 
     @Override
-    public void startBinlog() throws Exception {
-        CanalConnector connector = CanalConnectors.newSingleConnector(new InetSocketAddress(AddressUtils.getHostIp(),
+    public void startBinlog() throws Exception {//AddressUtils.getHostIp()
+        CanalConnector connector = CanalConnectors.newSingleConnector(new InetSocketAddress("192.168.1.172",
                 11111), "example", "", "");
         int batchSize = 1000;
         int emptyCount = 0;
@@ -51,7 +53,9 @@ public class CanalServiceImpl implements CanalService {
                     } catch (InterruptedException e) {
                     }
                 } else {
+                    logger.info("canal message");
                     printEntry(message.getEntries());
+
                 }
                 connector.ack(batchId);
             }
@@ -61,8 +65,16 @@ public class CanalServiceImpl implements CanalService {
     }
 
 
-    private  void printEntry(List<CanalEntry.Entry> entrys) {
+    private void printEntry(List<CanalEntry.Entry> entrys) {
         for (CanalEntry.Entry entry : entrys) {
+
+            if (!"test_a".equals(entry.getHeader().getSchemaName())) {
+                //logger.info(entry.getHeader().getSchemaName());
+                continue;
+            }
+
+            logger.info(entry.toString());
+
             if (entry.getEntryType() == EntryType.TRANSACTIONBEGIN || entry.getEntryType() == EntryType.TRANSACTIONEND) {
                 continue;
             }
@@ -76,23 +88,68 @@ public class CanalServiceImpl implements CanalService {
             }
 
             CanalEntry.EventType eventType = rowChage.getEventType();
+//            eventType == EventType.DELETE ||
+//                    eventType == EventType.INSERT ||
+//                    eventType == EventType.UPDATE ||
+//                    eventType == EventType.ALTER
+            String tableName = entry.getHeader().getTableName().toLowerCase();
+            if (tableName.contains("tb_user")) {
+                logger.info("eventType -- " + eventType.toString());
 
-            if (eventType == EventType.DELETE ||
-                    eventType == EventType.INSERT ||
-                    eventType == EventType.UPDATE ||
-                    eventType == EventType.ALTER) {
-
+                logger.info("tableName -- " + tableName);
                 List<Canal> list = propertyUtil.getCacheConfig();
                 for (Canal canal : list) {
-                    if (canal.getTableName().toLowerCase().equals(entry.getHeader().getTableName().toLowerCase())) {
+                    logger.info("canal config tableName -- " + canal.getTableName());
+                    // database name + table name
+                    String tableNameKey = entry.getHeader().getSchemaName() + "." + tableName;
+                    if (canal.getTableName().toLowerCase().equals(tableNameKey)) {
+
                         String[] cacheKyes = canal.getCacheKey().split(",");
-                        for (String cacheKye : cacheKyes) {
-                            RedisUtil.delKey(cacheKye);
+
+                        // 删除同步
+//                        for (String cacheKye : cacheKyes) {
+//                            RedisUtil.delKey("key" + cacheKye);
+//                            logger.info(cacheKye);
+//                        }
+
+
+                        // redis lpush
+                        try {
+                            RedisUtil.lpushByte(tableNameKey.getBytes(), entry.toByteArray());
+                        } catch (Exception e) {
+                            e.printStackTrace();
                         }
+
+                        //region ... redis lpop
+//                        Response<byte[]> responseValue = RedisUtil.getPipeline(tableNameKey.getBytes());
+//
+//                        if (responseValue == null) continue;
+//
+//                        CanalEntry.Entry entryParseFromRedis = null;
+//                        try {
+//                            entryParseFromRedis = CanalEntry.Entry.parseFrom(responseValue.get());
+//                        } catch (InvalidProtocolBufferException e) {
+//                            e.printStackTrace();
+//                        }
+//                        String strColumn = null;
+//
+//                        try {
+//                            strColumn = RowChange.parseFrom(entryParseFromRedis.getStoreValue()).
+//                                    getRowDatasList().get(0).getAfterColumnsList().toString();
+//                        } catch (InvalidProtocolBufferException e) {
+//                            e.printStackTrace();
+//                        }
+//                        logger.info("getPipeline :  " + strColumn);
+//
+                        //endregion
+
                     }
+
+
                 }
             }
         }
     }
-
 }
+
+
